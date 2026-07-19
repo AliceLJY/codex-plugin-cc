@@ -10,7 +10,6 @@ import {
   LOG_FILE_ENV,
   loadBrokerSession,
   PID_FILE_ENV,
-  registerBrokerClient,
   sendBrokerShutdown,
   teardownBrokerSession,
   unregisterBrokerClient
@@ -80,7 +79,6 @@ function handleSessionStart(input) {
   appendEnvVar(SESSION_ID_ENV, input.session_id);
   appendEnvVar(TRANSCRIPT_PATH_ENV, input.transcript_path);
   appendEnvVar(PLUGIN_DATA_ENV, process.env[PLUGIN_DATA_ENV]);
-  registerBrokerClient(input.cwd || process.cwd(), input.session_id);
 }
 
 async function handleSessionEnd(input) {

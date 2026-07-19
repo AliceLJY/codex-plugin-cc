@@ -2211,6 +2211,11 @@ test("ending one Claude session leaves a workspace broker running for another ac
     env: { ...baseEnv, CODEX_COMPANION_SESSION_ID: "sess-one" }
   });
   assert.equal(review.status, 0, review.stderr);
+  const secondReview = run("node", [SCRIPT, "adversarial-review"], {
+    cwd: repo,
+    env: { ...baseEnv, CODEX_COMPANION_SESSION_ID: "sess-two" }
+  });
+  assert.equal(secondReview.status, 0, secondReview.stderr);
   const brokerSession = loadBrokerSession(repo);
   assert.ok(brokerSession?.pid);
 
