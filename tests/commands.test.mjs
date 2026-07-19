@@ -210,6 +210,13 @@ test("hooks keep session-end cleanup and stop gating enabled", () => {
   assert.match(source, /session-lifecycle-hook\.mjs/);
 });
 
+test("README does not reference missing local media or anchors", () => {
+  const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+  assert.doesNotMatch(readme, /docs\/plugin-demo\.webm/);
+  assert.doesNotMatch(readme, /#what-does-the-review-gate-do/);
+  assert.match(readme, /\[review gate\]\(#enabling-review-gate\)/);
+});
+
 test("setup command can offer Codex install and still points users to codex login", () => {
   const setup = read("commands/setup.md");
   const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");

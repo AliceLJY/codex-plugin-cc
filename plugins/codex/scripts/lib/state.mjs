@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import process from "node:process";
 
 import { resolveWorkspaceRoot } from "./workspace.mjs";
 
@@ -11,6 +12,20 @@ const FALLBACK_STATE_ROOT_DIR = path.join(os.tmpdir(), "codex-companion");
 const STATE_FILE_NAME = "state.json";
 const JOBS_DIR_NAME = "jobs";
 const MAX_JOBS = 50;
+
+export function ensurePrivateDirectory(dirPath) {
+  fs.mkdirSync(dirPath, { recursive: true, mode: 0o700 });
+  if (process.platform !== "win32") {
+    fs.chmodSync(dirPath, 0o700);
+  }
+}
+
+export function writePrivateFile(filePath, contents) {
+  fs.writeFileSync(filePath, contents, { encoding: "utf8", mode: 0o600 });
+  if (process.platform !== "win32") {
+    fs.chmodSync(filePath, 0o600);
+  }
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -52,7 +67,12 @@ export function resolveJobsDir(cwd) {
 }
 
 export function ensureStateDir(cwd) {
-  fs.mkdirSync(resolveJobsDir(cwd), { recursive: true });
+  const stateDir = resolveStateDir(cwd);
+  const stateRoot = path.dirname(stateDir);
+  const jobsDir = path.join(stateDir, JOBS_DIR_NAME);
+  ensurePrivateDirectory(stateRoot);
+  ensurePrivateDirectory(stateDir);
+  ensurePrivateDirectory(jobsDir);
 }
 
 export function loadState(cwd) {
@@ -111,7 +131,7 @@ export function saveState(cwd, state) {
     removeFileIfExists(job.logFile);
   }
 
-  fs.writeFileSync(resolveStateFile(cwd), `${JSON.stringify(nextState, null, 2)}\n`, "utf8");
+  writePrivateFile(resolveStateFile(cwd), `${JSON.stringify(nextState, null, 2)}\n`);
   return nextState;
 }
 
@@ -166,7 +186,7 @@ export function getConfig(cwd) {
 export function writeJobFile(cwd, jobId, payload) {
   ensureStateDir(cwd);
   const jobFile = resolveJobFile(cwd, jobId);
-  fs.writeFileSync(jobFile, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  writePrivateFile(jobFile, `${JSON.stringify(payload, null, 2)}\n`);
   return jobFile;
 }
 

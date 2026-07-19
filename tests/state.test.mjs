@@ -5,7 +5,23 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { makeTempDir } from "./helpers.mjs";
-import { resolveJobFile, resolveJobLogFile, resolveStateDir, resolveStateFile, saveState } from "../plugins/codex/scripts/lib/state.mjs";
+import {
+  resolveJobFile,
+  resolveJobLogFile,
+  resolveStateDir,
+  resolveStateFile,
+  saveState,
+  writeJobFile
+} from "../plugins/codex/scripts/lib/state.mjs";
+import {
+  createBrokerSessionDir,
+  registerBrokerClient,
+  saveBrokerSession
+} from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
+
+function mode(filePath) {
+  return fs.statSync(filePath).mode & 0o777;
+}
 
 test("resolveStateDir uses a temp-backed per-workspace directory", () => {
   const workspace = makeTempDir();
@@ -38,6 +54,29 @@ test("resolveStateDir uses CLAUDE_PLUGIN_DATA when it is provided", () => {
       process.env.CLAUDE_PLUGIN_DATA = previousPluginDataDir;
     }
   }
+});
+
+test("fallback state and broker artifacts are private", { skip: process.platform === "win32" }, () => {
+  const workspace = makeTempDir();
+  const stateDir = resolveStateDir(workspace);
+  const stateFile = resolveStateFile(workspace);
+  const jobFile = writeJobFile(workspace, "job-private", { id: "job-private", status: "queued" });
+  saveState(workspace, { version: 1, config: { stopReviewGate: false }, jobs: [] });
+  saveBrokerSession(workspace, { endpoint: "unix:/tmp/example.sock" });
+  registerBrokerClient(workspace, "session-private");
+  const brokerDir = createBrokerSessionDir("cxc-private-");
+  const brokerClientsDir = path.join(stateDir, "broker-clients");
+  const [brokerClientFile] = fs.readdirSync(brokerClientsDir);
+
+  assert.equal(mode(path.dirname(stateDir)), 0o700);
+  assert.equal(mode(stateDir), 0o700);
+  assert.equal(mode(path.join(stateDir, "jobs")), 0o700);
+  assert.equal(mode(stateFile), 0o600);
+  assert.equal(mode(jobFile), 0o600);
+  assert.equal(mode(path.join(stateDir, "broker.json")), 0o600);
+  assert.equal(mode(brokerClientsDir), 0o700);
+  assert.equal(mode(path.join(brokerClientsDir, brokerClientFile)), 0o600);
+  assert.equal(mode(brokerDir), 0o700);
 });
 
 test("saveState prunes dropped job artifacts when indexed jobs exceed the cap", () => {

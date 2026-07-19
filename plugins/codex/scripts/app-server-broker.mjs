@@ -41,8 +41,12 @@ function writePidFile(pidFile) {
   if (!pidFile) {
     return;
   }
-  fs.mkdirSync(path.dirname(pidFile), { recursive: true });
-  fs.writeFileSync(pidFile, `${process.pid}\n`, "utf8");
+  fs.mkdirSync(path.dirname(pidFile), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(pidFile, `${process.pid}\n`, { encoding: "utf8", mode: 0o600 });
+  if (process.platform !== "win32") {
+    fs.chmodSync(path.dirname(pidFile), 0o700);
+    fs.chmodSync(pidFile, 0o600);
+  }
 }
 
 async function main() {

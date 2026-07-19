@@ -274,6 +274,11 @@ const bootState = loadState();
 bootState.appServerStarts = (bootState.appServerStarts || 0) + 1;
 saveState(bootState);
 
+if (BEHAVIOR === "ignore-shutdown") {
+  setInterval(() => {}, 1000);
+  process.on("SIGTERM", () => {});
+}
+
 const rl = readline.createInterface({ input: process.stdin });
 rl.on("line", (line) => {
   if (!line.trim()) {

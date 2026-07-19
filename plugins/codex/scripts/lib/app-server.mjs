@@ -54,6 +54,22 @@ function createProtocolError(message, data) {
   return error;
 }
 
+function waitForPromise(promise, timeoutMs) {
+  return new Promise((resolve) => {
+    let finished = false;
+    const finish = (value) => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    promise.then(() => finish(true), () => finish(true));
+  });
+}
+
 class AppServerClientBase {
   constructor(cwd, options = {}) {
     this.cwd = cwd;
@@ -241,28 +257,46 @@ class SpawnedCodexAppServerClient extends AppServerClientBase {
       this.readline.close();
     }
 
-    if (this.proc && !this.proc.killed) {
-      this.proc.stdin.end();
-      setTimeout(() => {
-        if (this.proc && !this.proc.killed && this.proc.exitCode === null) {
-          // On Windows with shell: true, the direct child is cmd.exe.
-          // Use terminateProcessTree to kill the entire tree including
-          // the grandchild node process.
-          if (process.platform === "win32") {
-            try {
-              terminateProcessTree(this.proc.pid);
-            } catch {
-              // Best-effort cleanup inside an unref'd timer — swallow errors
-              // to avoid crashing the host process during shutdown.
-            }
-          } else {
-            this.proc.kill("SIGTERM");
+    if (this.proc && this.proc.exitCode === null && this.proc.signalCode === null) {
+      try {
+        this.proc.stdin.end();
+      } catch {
+        // The child may already have closed stdin while its process is exiting.
+      }
+
+      const exitedAfterStdin = await waitForPromise(this.exitPromise, this.options.shutdownGraceMs ?? 50);
+      if (!exitedAfterStdin) {
+        this.terminate("SIGTERM");
+        const exitedAfterTerm = await waitForPromise(this.exitPromise, this.options.terminateGraceMs ?? 1000);
+        if (!exitedAfterTerm) {
+          this.terminate("SIGKILL");
+          const exitedAfterKill = await waitForPromise(this.exitPromise, this.options.killGraceMs ?? 1000);
+          if (!exitedAfterKill) {
+            const error = createProtocolError("codex app-server did not exit after SIGKILL.");
+            this.handleExit(error);
+            throw error;
           }
         }
-      }, 50).unref?.();
+      }
     }
 
     await this.exitPromise;
+  }
+
+  terminate(signal) {
+    if (!this.proc || this.proc.exitCode !== null || this.proc.signalCode !== null) {
+      return;
+    }
+    try {
+      if (process.platform === "win32") {
+        // With shell: true the direct child is cmd.exe; taskkill also stops its children.
+        terminateProcessTree(this.proc.pid);
+      } else {
+        this.proc.kill(signal);
+      }
+    } catch {
+      // The timeout sequence rechecks the exit event and escalates if needed.
+    }
   }
 
   sendMessage(message) {

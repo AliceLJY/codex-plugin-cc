@@ -1,13 +1,19 @@
 import fs from "node:fs";
 import path from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
-import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
-import { loadBrokerSession, saveBrokerSession } from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
+import { initGitRepo, listCreatedTempDirs, makeTempDir, run } from "./helpers.mjs";
+import {
+  clearBrokerSession,
+  loadBrokerSession,
+  saveBrokerSession,
+  teardownBrokerSession
+} from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
+import { terminateProcessTree } from "../plugins/codex/scripts/lib/process.mjs";
 import { resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -15,6 +21,24 @@ const PLUGIN_ROOT = path.join(ROOT, "plugins", "codex");
 const SCRIPT = path.join(PLUGIN_ROOT, "scripts", "codex-companion.mjs");
 const STOP_HOOK = path.join(PLUGIN_ROOT, "scripts", "stop-review-gate-hook.mjs");
 const SESSION_HOOK = path.join(PLUGIN_ROOT, "scripts", "session-lifecycle-hook.mjs");
+
+after(() => {
+  for (const cwd of listCreatedTempDirs()) {
+    const brokerSession = loadBrokerSession(cwd);
+    if (!brokerSession) {
+      continue;
+    }
+    teardownBrokerSession({
+      endpoint: brokerSession.endpoint ?? null,
+      pidFile: brokerSession.pidFile ?? null,
+      logFile: brokerSession.logFile ?? null,
+      sessionDir: brokerSession.sessionDir ?? null,
+      pid: brokerSession.pid ?? null,
+      killProcess: terminateProcessTree
+    });
+    clearBrokerSession(cwd);
+  }
+});
 
 async function waitFor(predicate, { timeoutMs = 5000, intervalMs = 50 } = {}) {
   const start = Date.now();
@@ -2159,6 +2183,71 @@ test("commands lazily start and reuse one shared app-server after first use", as
     })
   });
   assert.equal(cleanup.status, 0, cleanup.stderr);
+});
+
+test("ending one Claude session leaves a workspace broker running for another active session", (t) => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const fakeStatePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "README.md"), "hello again\n");
+
+  const baseEnv = buildEnv(binDir);
+  for (const sessionId of ["sess-one", "sess-two"]) {
+    const start = run("node", [SESSION_HOOK, "SessionStart"], {
+      cwd: repo,
+      env: baseEnv,
+      input: JSON.stringify({ hook_event_name: "SessionStart", session_id: sessionId, cwd: repo })
+    });
+    assert.equal(start.status, 0, start.stderr);
+  }
+
+  const review = run("node", [SCRIPT, "review"], {
+    cwd: repo,
+    env: { ...baseEnv, CODEX_COMPANION_SESSION_ID: "sess-one" }
+  });
+  assert.equal(review.status, 0, review.stderr);
+  const brokerSession = loadBrokerSession(repo);
+  assert.ok(brokerSession?.pid);
+
+  t.after(() => {
+    const remainingBroker = loadBrokerSession(repo);
+    if (remainingBroker?.pid) {
+      try {
+        terminateProcessTree(remainingBroker.pid);
+      } catch {
+        // Ignore an already-stopped test broker.
+      }
+    }
+  });
+
+  const firstEnd = run("node", [SESSION_HOOK, "SessionEnd"], {
+    cwd: repo,
+    env: { ...baseEnv, CODEX_COMPANION_SESSION_ID: "sess-one" },
+    input: JSON.stringify({ hook_event_name: "SessionEnd", session_id: "sess-one", cwd: repo })
+  });
+  assert.equal(firstEnd.status, 0, firstEnd.stderr);
+  assert.equal(loadBrokerSession(repo)?.pid, brokerSession.pid);
+
+  const status = run("node", [SCRIPT, "status"], {
+    cwd: repo,
+    env: { ...baseEnv, CODEX_COMPANION_SESSION_ID: "sess-two" }
+  });
+  assert.equal(status.status, 0, status.stderr);
+  assert.match(status.stdout, /Session runtime: shared session/);
+  assert.equal(JSON.parse(fs.readFileSync(fakeStatePath, "utf8")).appServerStarts, 1);
+
+  const secondEnd = run("node", [SESSION_HOOK, "SessionEnd"], {
+    cwd: repo,
+    env: { ...baseEnv, CODEX_COMPANION_SESSION_ID: "sess-two" },
+    input: JSON.stringify({ hook_event_name: "SessionEnd", session_id: "sess-two", cwd: repo })
+  });
+  assert.equal(secondEnd.status, 0, secondEnd.stderr);
+  assert.equal(loadBrokerSession(repo), null);
 });
 
 test("setup reuses an existing shared app-server without starting another one", () => {
